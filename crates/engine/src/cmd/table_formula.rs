@@ -846,8 +846,27 @@ mod tests {
         assert_eq!(parse_number("B/. 1,200.00", None), Some(1200.0), "the Panamanian balboa");
         assert_eq!(parse_number("1,200.00 B/.", Some("es-PA")), Some(1200.0));
         assert_eq!(parse_number("B/.1,200.00", None), None, "Word needs a space after the sign");
+        // The formula reads the cell in the document's language. With the document's default text
+        // as es-PA and the editing language as pl-PL the choice is observable: `1,250.50` is a
+        // number under es-PA and not under pl-PL (whose decimal separator is `,`).
         let balboa = table(&[&["B/. 1,250.50"], &[""]]);
-        assert_eq!(ev(&balboa, 1, 0, "=SUM(ABOVE)"), Ok(1250.5), "a balboa cell sums");
+        let mut doc = wordcraft_doc::Document::new();
+        doc.styles.default_chr.lang = Some("es-PA".into());
+        assert_eq!(
+            evaluate_with(&balboa, Some(&doc), Some("pl-PL"), 1, 0, "=SUM(ABOVE)"),
+            Ok(1250.5),
+            "a balboa cell sums in the document's language, not the editing language",
+        );
+        // And the other way around: a balboa cell written with Polish separators is read only when
+        // the document language reaches the parser, not when it falls back to English.
+        let mut polish = wordcraft_doc::Document::new();
+        polish.styles.default_chr.lang = Some("pl-PL".into());
+        let balboa_pl = table(&[&["B/. 1 250,50"], &[""]]);
+        assert_eq!(
+            evaluate_with(&balboa_pl, Some(&polish), Some("en-US"), 1, 0, "=SUM(ABOVE)"),
+            Ok(1250.5),
+            "the cell's language selects the separators; English does not read `1 250,50`",
+        );
         assert_eq!(parse_number(" 12% ", None), Some(12.0));
         assert_eq!(parse_number("(5)", None), Some(-5.0));
         assert_eq!(parse_number("x9", None), None);
