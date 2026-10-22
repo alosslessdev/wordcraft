@@ -8,7 +8,7 @@ pub fn decimal_separator(lang: Option<&str>) -> char {
     let tag = lang.unwrap_or("").trim().to_ascii_lowercase().replace('_', "-");
     // Regions that write a decimal point where the language usually writes a comma.
     const POINT_REGIONS: &[&str] =
-        &["de-ch", "de-li", "it-ch", "es-mx", "es-us", "es-419", "es-pr", "es-do", "es-gt", "es-hn", "es-ni", "es-pa", "es-sv"];
+        &["de-ch", "de-li", "it-ch", "es-mx", "es-us", "es-419", "es-cu", "es-do", "es-gt", "es-hn", "es-ni", "es-pa", "es-pe", "es-pr", "es-sv"];
     if POINT_REGIONS.iter().any(|r| tag == *r || tag.starts_with(&format!("{r}-"))) {
         return '.';
     }
@@ -270,6 +270,67 @@ mod tests {
         for s in ["Bs.", "Bs", "R$", "US$", "S/.", "S/", "$U", "Q", "L"] {
             assert_eq!(parse_number(s, en), None, "{s}");
         }
+    }
+
+    #[test]
+    fn regional_separators_and_whole_amounts() {
+        // Latin American regions that write a decimal point (CLDR) versus the rest of Spanish America and Brazil.
+        for (s, lang) in [
+            ("MX$ 1,250.50", "es-MX"),
+            ("US$ 1,250.50", "es-PA"),
+            ("S/. 1,250.50", "es-PE"),
+            ("CUP$ 1,250.50", "es-CU"),
+            ("Q 1,250.50", "es-GT"),
+            ("L 1,250.50", "es-HN"),
+            ("C$ 1,250.50", "es-NI"),
+            ("RD$ 1,250.50", "es-DO"),
+        ] {
+            assert_eq!(parse_number(s, Some(lang)), Some(1250.5), "{lang}: {s}");
+        }
+        for (s, lang) in [
+            ("R$ 1.250,50", "pt-BR"),
+            ("Arg$ 1.250,50", "es-AR"),
+            ("Bs. 1.250,50", "es-BO"),
+            ("CLP 1.250,50", "es-CL"),
+            ("COP 1.250,50", "es-CO"),
+            ("CRC 1.250,50", "es-CR"),
+            ("Bs. 1.250,50", "es-VE"),
+            ("$U 1.250,50", "es-UY"),
+            ("PYG 1.250,50", "es-PY"),
+        ] {
+            assert_eq!(parse_number(s, Some(lang)), Some(1250.5), "{lang}: {s}");
+        }
+        // Whole amounts without cents: the region's group separator, no decimal part.
+        for (s, lang) in [
+            ("MX$ 1,250", "es-MX"),
+            ("US$ 1,250", "es-PA"),
+            ("S/. 1,250", "es-PE"),
+            ("CUP$ 1,250", "es-CU"),
+            ("Q 1,250", "es-GT"),
+            ("L 1,250", "es-HN"),
+            ("C$ 1,250", "es-NI"),
+            ("RD$ 1,250", "es-DO"),
+        ] {
+            assert_eq!(parse_number(s, Some(lang)), Some(1250.0), "{lang}: {s}");
+        }
+        for (s, lang) in [
+            ("R$ 1.250", "pt-BR"),
+            ("Arg$ 1.250", "es-AR"),
+            ("Bs. 1.250", "es-BO"),
+            ("Bs. 1.250", "es-VE"),
+            ("$U 1.250", "es-UY"),
+            ("PYG 1.250", "es-PY"),
+        ] {
+            assert_eq!(parse_number(s, Some(lang)), Some(1250.0), "{lang}: {s}");
+        }
+        // The other form is not that region's number when the separators change meaning.
+        assert_eq!(parse_number("R$ 1,250.50", Some("pt-BR")), None);
+        assert_eq!(parse_number("S/. 1.250,50", Some("es-PE")), None);
+        // Whole results show no decimals; fractional results use the region's separator.
+        assert_eq!(format_number(1250.0, Some("pt-BR")), "1250");
+        assert_eq!(format_number(1250.0, Some("es-PE")), "1250");
+        assert_eq!(format_number(1250.5, Some("pt-BR")), "1250,50");
+        assert_eq!(format_number(1250.5, Some("es-PE")), "1250.50");
     }
 
     #[test]
