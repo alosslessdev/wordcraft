@@ -22,10 +22,53 @@ pub fn decimal_separator(lang: Option<&str>) -> char {
 
 const SPACES: &[char] = &[' ', '\u{a0}', '\u{202f}', '\u{2009}'];
 const CURRENCY: &[char] = &['$', '€', '£', '¥', '¢', '₽', '₴', '₺', '₹', '₩', '₪', '₫', '฿', '₱', '₸', '₼', '₾'];
+/// Currency signs spelled with more than one character, longest first, and whether the sign may
+/// touch the number. Word reads `R$1,250` and `US$ 1,250`, but needs a space in `Bs. 1,250` and
+/// `S/. 1,250`. ISO codes (`ARS 1,250`) are read by the three-letter currency word below.
+const CURRENCY_SYMBOLS: &[(&str, bool)] = &[
+    ("Bs.S", false), // Venezuelan bolívar
+    ("Bs.", false),  // Bolivian boliviano; also the Venezuelan bolívar
+    ("Bs", false),   // Bolivian boliviano, as CLDR writes it
+    ("US$", true),   // United States dollar, used in Ecuador, El Salvador and Puerto Rico
+    ("Arg$", true),  // Argentine peso
+    ("CUP$", true),  // Cuban peso
+    ("RD$", true),   // Dominican peso
+    ("MX$", true),   // Mexican peso
+    ("C$", true),    // Nicaraguan córdoba
+    ("R$", true),    // Brazilian real
+    ("S/.", false),  // Peruvian sol
+    ("S/", false),   // Peruvian sol, as CLDR writes it
+    ("$U", false),   // Uruguayan peso
+    ("Q", false),    // Guatemalan quetzal
+    ("L", false),    // Honduran lempira
+];
 
-/// Strip a currency symbol or a short currency word (`zł`, `kr`, `PLN`) from either end.
+/// Trim spaces and single-character currency signs from either end.
+fn trim_currency(s: &str) -> &str {
+    s.trim_matches(|c: char| c.is_whitespace() || CURRENCY.contains(&c))
+}
+
+/// Strip a multi-character currency sign from one end. A sign that may not touch the number must
+/// be followed (as a prefix) or preceded (as a suffix) by whitespace, as Word reads it.
+fn strip_symbol(s: &str, suffix: bool) -> Option<&str> {
+    CURRENCY_SYMBOLS.iter().find_map(|(sign, may_touch)| {
+        let rest = if suffix { s.strip_suffix(*sign)? } else { s.strip_prefix(*sign)? };
+        let boundary = if suffix { rest.chars().next_back() } else { rest.chars().next() };
+        (*may_touch || boundary.is_some_and(char::is_whitespace)).then_some(rest)
+    })
+}
+
+/// Strip a currency symbol or a short currency word (`zł`, `kr`, `PLN`, `R$`, `Bs.`) from either
+/// end.
 fn strip_currency(s: &str) -> &str {
-    let mut s = s.trim_matches(|c: char| c.is_whitespace() || CURRENCY.contains(&c));
+    let mut s = s.trim();
+    if let Some(rest) = strip_symbol(s, false) {
+        s = trim_currency(rest);
+    }
+    if let Some(rest) = strip_symbol(s, true) {
+        s = trim_currency(rest);
+    }
+    s = trim_currency(s);
     if let Some((head, word)) = s.rsplit_once(SPACES)
         && (1..=3).contains(&word.chars().count())
         && word.chars().all(|c| c.is_alphabetic() || c == '.')
@@ -167,6 +210,66 @@ mod tests {
         assert_eq!(format_number(-0.0, None), "0");
         assert_eq!(decimal_separator(Some("de-CH")), '.');
         assert_eq!(decimal_separator(Some("de-DE")), ',');
+    }
+
+    #[test]
+    fn latin_american_currencies() {
+        let en = Some("en-US");
+        // Signs that may touch the number, as Word reads them.
+        for s in [
+            "US$1,250.50",
+            "US$ 1,250.50",
+            "Arg$1,250.50",
+            "Arg$ 1,250.50",
+            "R$1,250.50",
+            "R$ 1,250.50",
+            "CUP$1,250.50",
+            "CUP$ 1,250.50",
+            "RD$1,250.50",
+            "RD$ 1,250.50",
+            "MX$1,250.50",
+            "MX$ 1,250.50",
+            "C$1,250.50",
+            "C$ 1,250.50",
+        ] {
+            assert_eq!(parse_number(s, en), Some(1250.5), "{s}");
+        }
+        // Signs that are a word of their own, as Word reads them.
+        for s in ["Bs. 1,250.50", "Bs 1,250.50", "Bs.S 1,250.50", "S/. 1,250.50", "S/ 1,250.50", "$U 1,250.50", "Q 1,250.50", "L 1,250.50"] {
+            assert_eq!(parse_number(s, en), Some(1250.5), "{s}");
+        }
+        for s in ["Bs.1,250.50", "Bs1,250.50", "Bs.S1,250.50", "S/.1,250.50", "S/1,250.50", "$U1,250.50", "Q1,250.50", "L1,250.50"] {
+            assert_eq!(parse_number(s, en), None, "{s}");
+        }
+        // Suffixes.
+        for s in [
+            "1,250.50 Bs.",
+            "1,250.50 R$",
+            "1,250.50 S/.",
+            "1,250.50 S/",
+            "1,250.50 Q",
+            "1,250.50 L",
+            "1,250.50 $U",
+            "1,250.50 C$",
+            "1,250.50 RD$",
+            "1,250.50 MX$",
+            "1,250.50 US$",
+            "1,250.50 Arg$",
+            "1,250.50 CUP$",
+        ] {
+            assert_eq!(parse_number(s, en), Some(1250.5), "{s}");
+        }
+        // The ISO codes were already read as three-letter currency words.
+        for code in ["ARS", "BOB", "BRL", "CLP", "COP", "CUP", "DOP", "GTQ", "HNL", "MXN", "NIO", "PEN", "UYU", "VES", "USD"] {
+            assert_eq!(parse_number(&format!("{code} 1,250.50"), en), Some(1250.5), "{code}");
+        }
+        // Locale separators and a sign before the currency sign.
+        assert_eq!(parse_number("R$ 1.250,50", Some("pt-BR")), Some(1250.5));
+        assert_eq!(parse_number("Bs. 1 250,50", Some("es-BO")), Some(1250.5));
+        assert_eq!(parse_number("-R$ 1,250.50", en), Some(-1250.5));
+        for s in ["Bs.", "Bs", "R$", "US$", "S/.", "S/", "$U", "Q", "L"] {
+            assert_eq!(parse_number(s, en), None, "{s}");
+        }
     }
 
     #[test]
